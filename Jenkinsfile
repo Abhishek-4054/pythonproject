@@ -85,6 +85,23 @@ pipeline {
             }
         }
         /* ==========================
+           START MINIKUBE (if not running)
+        ========================== */
+        stage('Ensure Minikube Running') {
+            steps {
+                script {
+                    bat '''
+                    minikube status || minikube start
+                    '''
+                }
+            }
+            post {
+                success {
+                    echo '✅ Stage Complete: Minikube is running'
+                }
+            }
+        }
+        /* ==========================
            DEPLOY TO MINIKUBE
         ========================== */
         stage('Deploy to Minikube') {
@@ -103,6 +120,22 @@ pipeline {
             }
         }
         /* ==========================
+           WAIT FOR DEPLOYMENTS
+        ========================== */
+        stage('Wait for Deployments') {
+            steps {
+                bat '''
+                kubectl wait --for=condition=available --timeout=300s deployment/backend-deployment
+                kubectl wait --for=condition=available --timeout=300s deployment/frontend-deployment
+                '''
+            }
+            post {
+                success {
+                    echo '✅ Stage Complete: All deployments are ready'
+                }
+            }
+        }
+        /* ==========================
            GET SERVICE URLS
         ========================== */
         stage('Get Service URLs') {
@@ -110,24 +143,65 @@ pipeline {
                 script {
                     echo '🔗 Retrieving service URLs...'
                     bat '''
+                    @echo off
                     echo.
                     echo ========================================
                     echo    APPLICATION ACCESS URLS
                     echo ========================================
                     echo.
                     echo Backend Service:
-                    minikube service backend-service --url
+                    minikube service backend-service --url 2>nul || kubectl get service backend-service -o jsonpath="{.spec.ports[0].nodePort}" && echo    URL: http://$(minikube ip):NodePort
                     echo.
                     echo Frontend Service:
-                    minikube service frontend-service --url
+                    minikube service frontend-service --url 2>nul || kubectl get service frontend-service -o jsonpath="{.spec.ports[0].nodePort}" && echo    URL: http://$(minikube ip):NodePort
                     echo.
+                    echo ========================================
+                    echo.
+                    echo Alternative: Run these commands manually:
+                    echo   minikube service backend-service --url
+                    echo   minikube service frontend-service --url
                     echo ========================================
                     '''
                 }
             }
             post {
                 success {
-                    echo '✅ Stage Complete: Service URLs retrieved successfully'
+                    echo '✅ Stage Complete: Service URLs retrieved'
+                }
+                failure {
+                    echo '⚠️  Could not auto-retrieve URLs. Please run manually:'
+                    echo '   minikube service backend-service --url'
+                    echo '   minikube service frontend-service --url'
+                }
+            }
+        }
+        /* ==========================
+           DISPLAY SERVICE INFO
+        ========================== */
+        stage('Display Service Info') {
+            steps {
+                bat '''
+                echo.
+                echo ========================================
+                echo    DEPLOYMENT STATUS
+                echo ========================================
+                kubectl get deployments
+                echo.
+                echo ========================================
+                echo    SERVICES
+                echo ========================================
+                kubectl get services
+                echo.
+                echo ========================================
+                echo    PODS
+                echo ========================================
+                kubectl get pods
+                echo ========================================
+                '''
+            }
+            post {
+                success {
+                    echo '✅ Stage Complete: Service information displayed'
                 }
             }
         }
@@ -140,7 +214,14 @@ pipeline {
             echo '================================================'
             echo 'All stages executed successfully!'
             echo 'Your application is now running on Minikube.'
-            echo 'Check the console output above for service URLs.'
+            echo ''
+            echo 'To access your services, run:'
+            echo '  minikube service backend-service --url'
+            echo '  minikube service frontend-service --url'
+            echo ''
+            echo 'Or open in browser:'
+            echo '  minikube service backend-service'
+            echo '  minikube service frontend-service'
             echo '================================================'
         }
         failure {
