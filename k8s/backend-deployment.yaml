@@ -14,6 +14,7 @@ spec:
     spec:
       containers:
       - name: backend
-        image: yourdockerhubname/expense-backend:latest
+        image: abhishekc4054/backend:latest
+        imagePullPolicy: Never
         ports:
         - containerPort: 8000
