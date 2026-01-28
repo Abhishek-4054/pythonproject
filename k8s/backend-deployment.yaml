@@ -13,7 +13,8 @@ spec:
         app: backend
     spec:
       containers:
-      - name: backend
-        image: yourdockerhubname/expense-backend:latest
-        ports:
-        - containerPort: 8000
+        - name: backend
+          image: IMAGE_BACKEND
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 8000
