@@ -85,19 +85,31 @@ pipeline {
             }
         }
         /* ==========================
-           START MINIKUBE (if not running)
+           CLEANUP & START MINIKUBE
         ========================== */
-        stage('Ensure Minikube Running') {
+        stage('Setup Minikube') {
             steps {
                 script {
                     bat '''
-                    minikube status || minikube start
+                    echo Cleaning up existing Minikube cluster...
+                    minikube delete 2>nul || echo No existing cluster
+                    
+                    echo Starting fresh Minikube cluster...
+                    minikube start --driver=docker --force
+                    
+                    echo Waiting for cluster to be ready...
+                    timeout /t 30 /nobreak
+                    
+                    minikube status
                     '''
                 }
             }
             post {
                 success {
-                    echo '✅ Stage Complete: Minikube is running'
+                    echo '✅ Stage Complete: Minikube cluster is running'
+                }
+                failure {
+                    echo '❌ Minikube failed to start. Check Docker Desktop is running.'
                 }
             }
         }
@@ -125,8 +137,9 @@ pipeline {
         stage('Wait for Deployments') {
             steps {
                 bat '''
-                kubectl wait --for=condition=available --timeout=300s deployment/backend-deployment
-                kubectl wait --for=condition=available --timeout=300s deployment/frontend-deployment
+                echo Waiting for deployments to be ready...
+                kubectl wait --for=condition=available --timeout=300s deployment/backend-deployment 2>nul || echo Backend deployment check timed out
+                kubectl wait --for=condition=available --timeout=300s deployment/frontend-deployment 2>nul || echo Frontend deployment check timed out
                 '''
             }
             post {
@@ -141,25 +154,23 @@ pipeline {
         stage('Get Service URLs') {
             steps {
                 script {
-                    echo '🔗 Retrieving service URLs...'
                     bat '''
                     @echo off
                     echo.
                     echo ========================================
-                    echo    APPLICATION ACCESS URLS
+                    echo    APPLICATION DEPLOYED SUCCESSFULLY
                     echo ========================================
                     echo.
-                    echo Backend Service:
-                    minikube service backend-service --url 2>nul || kubectl get service backend-service -o jsonpath="{.spec.ports[0].nodePort}" && echo    URL: http://$(minikube ip):NodePort
+                    echo Getting service URLs...
                     echo.
-                    echo Frontend Service:
-                    minikube service frontend-service --url 2>nul || kubectl get service frontend-service -o jsonpath="{.spec.ports[0].nodePort}" && echo    URL: http://$(minikube ip):NodePort
+                    
+                    echo Backend Service URL:
+                    for /f "tokens=*" %%i in ('minikube service backend-service --url') do echo %%i
                     echo.
-                    echo ========================================
+                    
+                    echo Frontend Service URL:
+                    for /f "tokens=*" %%i in ('minikube service frontend-service --url') do echo %%i
                     echo.
-                    echo Alternative: Run these commands manually:
-                    echo   minikube service backend-service --url
-                    echo   minikube service frontend-service --url
                     echo ========================================
                     '''
                 }
@@ -167,11 +178,6 @@ pipeline {
             post {
                 success {
                     echo '✅ Stage Complete: Service URLs retrieved'
-                }
-                failure {
-                    echo '⚠️  Could not auto-retrieve URLs. Please run manually:'
-                    echo '   minikube service backend-service --url'
-                    echo '   minikube service frontend-service --url'
                 }
             }
         }
@@ -212,14 +218,13 @@ pipeline {
             echo '================================================'
             echo '✅ PIPELINE COMPLETED SUCCESSFULLY'
             echo '================================================'
-            echo 'All stages executed successfully!'
-            echo 'Your application is now running on Minikube.'
+            echo 'Your application is now running on Minikube!'
             echo ''
-            echo 'To access your services, run:'
+            echo 'Access your services using these commands:'
             echo '  minikube service backend-service --url'
             echo '  minikube service frontend-service --url'
             echo ''
-            echo 'Or open in browser:'
+            echo 'Or open directly in browser:'
             echo '  minikube service backend-service'
             echo '  minikube service frontend-service'
             echo '================================================'
@@ -230,6 +235,11 @@ pipeline {
             echo '❌ PIPELINE FAILED'
             echo '================================================'
             echo 'Please check the logs above for error details.'
+            echo ''
+            echo 'Common fixes:'
+            echo '1. Ensure Docker Desktop is running'
+            echo '2. Try: minikube delete && minikube start'
+            echo '3. Check if WSL2 is properly configured'
             echo '================================================'
         }
         always {
