@@ -1,61 +1,94 @@
 pipeline {
-  agent any
+    agent any
 
-  environment {
-    DOCKERHUB = "yourdockerhubname"
-    BACKEND_IMAGE = "${DOCKERHUB}/expense-backend"
-    FRONTEND_IMAGE = "${DOCKERHUB}/expense-frontend"
-  }
+    environment {
+        DOCKERHUB_USERNAME = 'abhishekc4054'
+        BACKEND_IMAGE     = "${DOCKERHUB_USERNAME}/backend:latest"
+        FRONTEND_IMAGE    = "${DOCKERHUB_USERNAME}/frontend:latest"
 
-  stages {
-
-    stage('Checkout') {
-      steps {
-        git branch: 'main', url: 'https://github.com/yourrepo.git'
-      }
+        DOCKER_CREDS = 'dockerhub-credentials'
+        GITHUB_CREDS = 'github-credentials'
     }
 
-    stage('Build Backend Image') {
-      steps {
-        sh 'docker build -t $BACKEND_IMAGE:latest -f backend/Dockerfile .'
-      }
-    }
+    stages {
 
-    stage('Build Frontend Image') {
-      steps {
-        sh 'docker build -t $FRONTEND_IMAGE:latest -f frontend/Dockerfile .'
-      }
-    }
-
-    stage('Docker Login') {
-      steps {
-        withCredentials([usernamePassword(
-          credentialsId: 'dockerhub-cred',
-          usernameVariable: 'USER',
-          passwordVariable: 'PASS'
-        )]) {
-          sh 'echo $PASS | docker login -u $USER --password-stdin'
+        /* ==========================
+           SCM CHECKOUT (AUTO)
+        ========================== */
+        stage('Checkout SCM') {
+            steps {
+                checkout scm
+            }
         }
-      }
+
+        /* ==========================
+           BACKEND BUILD
+        ========================== */
+        stage('Build Backend Image') {
+            steps {
+                dir('backend') {
+                    bat 'docker build -t %BACKEND_IMAGE% .'
+                }
+            }
+        }
+
+        /* ==========================
+           FRONTEND BUILD
+        ========================== */
+        stage('Build Frontend Image') {
+            steps {
+                dir('frontend') {
+                    bat 'docker build -t %FRONTEND_IMAGE% .'
+                }
+            }
+        }
+
+        /* ==========================
+           DOCKER LOGIN
+        ========================== */
+        stage('Docker Login') {
+            steps {
+                withCredentials([usernamePassword(
+                    credentialsId: DOCKER_CREDS,
+                    usernameVariable: 'DOCKER_USER',
+                    passwordVariable: 'DOCKER_PASS'
+                )]) {
+                    bat 'echo %DOCKER_PASS% | docker login -u %DOCKER_USER% --password-stdin'
+                }
+            }
+        }
+
+        /* ==========================
+           PUSH IMAGES
+        ========================== */
+        stage('Push Images') {
+            steps {
+                bat 'docker push %BACKEND_IMAGE%'
+                bat 'docker push %FRONTEND_IMAGE%'
+            }
+        }
+
+        /* ==========================
+           DEPLOY TO MINIKUBE
+        ========================== */
+        stage('Deploy to Minikube') {
+            steps {
+                bat '''
+                kubectl apply -f k8s/backend-deployment.yaml
+                kubectl apply -f k8s/frontend-deployment.yaml
+                kubectl apply -f k8s/backend-service.yaml
+                kubectl apply -f k8s/frontend-service.yaml
+                '''
+            }
+        }
     }
 
-    stage('Push Images') {
-      steps {
-        sh '''
-          docker push $BACKEND_IMAGE:latest
-          docker push $FRONTEND_IMAGE:latest
-        '''
-      }
+    post {
+        success {
+            echo '✅ Pipeline completed successfully'
+        }
+        failure {
+            echo '❌ Pipeline failed'
+        }
     }
-
-    stage('Deploy to Minikube') {
-      steps {
-        sh '''
-          kubectl apply -f k8s/
-          kubectl rollout status deployment/backend
-          kubectl rollout status deployment/frontend
-        '''
-      }
-    }
-  }
 }
