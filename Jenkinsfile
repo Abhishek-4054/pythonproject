@@ -7,7 +7,7 @@ pipeline {
         FRONTEND_IMAGE    = "${DOCKERHUB_USER}/expense-frontend:${BUILD_NUMBER}"
         BACKEND_LATEST    = "${DOCKERHUB_USER}/expense-backend:latest"
         FRONTEND_LATEST   = "${DOCKERHUB_USER}/expense-frontend:latest"
-        VM_HOST           = "192.168.49.1"
+        VM_HOST           = "192.168.130.131"
         VM_USER           = "abhishek4054"
         K8S_MANIFESTS_PATH = "/home/abhishek4054/k8s-manifests"
     }
