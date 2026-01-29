@@ -14,7 +14,9 @@ pipeline {
 
     stages {
         stage('Checkout') {
-            steps { checkout scm }
+            steps {
+                checkout scm
+            }
         }
 
         stage('Build Backend') {
@@ -31,27 +33,31 @@ pipeline {
             }
         }
 
-        stage('Push Backend') {
+        stage('Docker Login') {
             steps {
                 withCredentials([usernamePassword(credentialsId: 'dockerhub-credentials', usernameVariable: 'U', passwordVariable: 'P')]) {
                     bat "echo %P% | docker login -u %U% --password-stdin"
-                    bat "docker push %BACKEND_IMAGE%"
-                    bat "docker push %BACKEND_LATEST%"
                 }
+            }
+        }
+
+        stage('Push Backend') {
+            steps {
+                bat "docker push %BACKEND_IMAGE%"
+                bat "docker push %BACKEND_LATEST%"
             }
         }
 
         stage('Push Frontend') {
             steps {
-                withCredentials([usernamePassword(credentialsId: 'dockerhub-credentials', usernameVariable: 'U', passwordVariable: 'P')]) {
-                    bat "docker push %FRONTEND_IMAGE%"
-                    bat "docker push %FRONTEND_LATEST%"
-                }
+                bat "docker push %FRONTEND_IMAGE%"
+                bat "docker push %FRONTEND_LATEST%"
             }
         }
 
-        stage('Update YAMLs') {
+        stage('Prepare Manifests') {
             steps {
+                // Image tags update karna YAML files mein
                 bat """
                 powershell -Command "(Get-Content k8s\\backend-deployment.yaml) -replace 'IMAGE_BACKEND', '%BACKEND_LATEST%' | Set-Content k8s\\backend-deployment-updated.yaml"
                 powershell -Command "(Get-Content k8s\\frontend-deployment.yaml) -replace 'IMAGE_FRONTEND', '%FRONTEND_LATEST%' | Set-Content k8s\\frontend-deployment-updated.yaml"
@@ -64,9 +70,12 @@ pipeline {
                 withCredentials([sshUserPrivateKey(credentialsId: 'vm-ssh-credentials', keyFileVariable: 'SSH_KEY', usernameVariable: 'SSH_USER')]) {
                     bat """
                     @echo off
+                    :: Permission fix for Windows SSH
                     powershell -Command "\$p='%SSH_KEY%'; \$acl = Get-Acl \$p; \$acl.SetAccessRuleProtection(\$true, \$false); \$rule = New-Object System.Security.AccessControl.FileSystemAccessRule([System.Security.Principal.WindowsIdentity]::GetCurrent().Name, 'FullControl', 'Allow'); \$acl.AddAccessRule(\$rule); Set-Acl \$p \$acl"
                     
                     ssh -i "%SSH_KEY%" -o StrictHostKeyChecking=no %SSH_USER%@%VM_HOST% "mkdir -p ${K8S_MANIFESTS_PATH}"
+                    
+                    :: Updated files ko VM par copy karna
                     scp -i "%SSH_KEY%" -o StrictHostKeyChecking=no k8s\\backend-deployment-updated.yaml %SSH_USER%@%VM_HOST%:${K8S_MANIFESTS_PATH}/backend-deployment.yaml
                     scp -i "%SSH_KEY%" -o StrictHostKeyChecking=no k8s\\backend-service.yaml %SSH_USER%@%VM_HOST%:${K8S_MANIFESTS_PATH}/
                     scp -i "%SSH_KEY%" -o StrictHostKeyChecking=no k8s\\frontend-deployment-updated.yaml %SSH_USER%@%VM_HOST%:${K8S_MANIFESTS_PATH}/frontend-deployment.yaml
@@ -83,23 +92,34 @@ pipeline {
                     @echo off
                     powershell -Command "\$p='%SSH_KEY%'; \$acl = Get-Acl \$p; \$acl.SetAccessRuleProtection(\$true, \$false); \$rule = New-Object System.Security.AccessControl.FileSystemAccessRule([System.Security.Principal.WindowsIdentity]::GetCurrent().Name, 'FullControl', 'Allow'); \$acl.AddAccessRule(\$rule); Set-Acl \$p \$acl"
                     
+                    :: Apply commands
                     ssh -i "%SSH_KEY%" -o StrictHostKeyChecking=no %SSH_USER%@%VM_HOST% "kubectl apply -f ${K8S_MANIFESTS_PATH}/"
                     """
                 }
             }
         }
 
-        stage('Verify') {
+        stage('Verify Rollout') {
             steps {
                 withCredentials([sshUserPrivateKey(credentialsId: 'vm-ssh-credentials', keyFileVariable: 'SSH_KEY', usernameVariable: 'SSH_USER')]) {
                     bat """
                     @echo off
                     powershell -Command "\$p='%SSH_KEY%'; \$acl = Get-Acl \$p; \$acl.SetAccessRuleProtection(\$true, \$false); \$rule = New-Object System.Security.AccessControl.FileSystemAccessRule([System.Security.Principal.WindowsIdentity]::GetCurrent().Name, 'FullControl', 'Allow'); \$acl.AddAccessRule(\$rule); Set-Acl \$p \$acl"
                     
-                    ssh -i "%SSH_KEY%" -o StrictHostKeyChecking=no %SSH_USER%@%VM_HOST% "echo '--- Existing Deployments ---' && kubectl get deployments && kubectl rollout status deployment/expense-backend --timeout=2m && kubectl rollout status deployment/expense-frontend --timeout=2m"
+                    :: Deployment status check karna (Correct names ke saath)
+                    ssh -i "%SSH_KEY%" -o StrictHostKeyChecking=no %SSH_USER%@%VM_HOST% "kubectl rollout status deployment/expense-backend --timeout=2m && kubectl rollout status deployment/expense-frontend --timeout=2m && kubectl get pods"
                     """
                 }
             }
+        }
+    }
+
+    post {
+        always {
+            bat "docker image prune -f"
+        }
+        success {
+            echo "Congratulations! Build #${env.BUILD_NUMBER} deployed successfully."
         }
     }
 }
