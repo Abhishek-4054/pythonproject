@@ -3,9 +3,15 @@ pipeline {
     
     environment {
         DOCKERHUB_USER = "abhishekc4054"
-        BACKEND_IMAGE  = "${DOCKERHUB_USER}/expense-backend:latest"
-        FRONTEND_IMAGE = "${DOCKERHUB_USER}/expense-frontend:latest"
-        KUBECONFIG     = "C:\\Windows\\System32\\config\\systemprofile\\.kube\\config"
+        BACKEND_IMAGE  = "${DOCKERHUB_USER}/expense-backend:${BUILD_NUMBER}"
+        FRONTEND_IMAGE = "${DOCKERHUB_USER}/expense-frontend:${BUILD_NUMBER}"
+        BACKEND_LATEST = "${DOCKERHUB_USER}/expense-backend:latest"
+        FRONTEND_LATEST = "${DOCKERHUB_USER}/expense-frontend:latest"
+        
+        // VM Configuration - UPDATE THESE VALUES
+        VM_HOST = "192.168.130.131// e.g., "192.168.1.100"
+        VM_USER = "abhishek4054 e.g., "ubuntu"
+        K8S_MANIFESTS_PATH = "/home/${VM_USER}/k8s-manifests"
     }
     
     stages {
@@ -19,18 +25,20 @@ pipeline {
         stage('Build Backend Image') {
             steps {
                 echo 'Building Backend Docker Image...'
-                bat '''
+                bat """
                 docker build -t %BACKEND_IMAGE% backend
-                '''
+                docker tag %BACKEND_IMAGE% %BACKEND_LATEST%
+                """
             }
         }
         
         stage('Build Frontend Image') {
             steps {
                 echo 'Building Frontend Docker Image...'
-                bat '''
+                bat """
                 docker build -t %FRONTEND_IMAGE% frontend
-                '''
+                docker tag %FRONTEND_IMAGE% %FRONTEND_LATEST%
+                """
             }
         }
         
@@ -42,9 +50,9 @@ pipeline {
                     usernameVariable: 'DOCKER_USER',
                     passwordVariable: 'DOCKER_PASS'
                 )]) {
-                    bat '''
+                    bat """
                     echo %DOCKER_PASS% | docker login -u %DOCKER_USER% --password-stdin
-                    '''
+                    """
                 }
             }
         }
@@ -52,114 +60,99 @@ pipeline {
         stage('Push Images') {
             steps {
                 echo 'Pushing Docker Images to Docker Hub...'
-                bat '''
+                bat """
                 docker push %BACKEND_IMAGE%
+                docker push %BACKEND_LATEST%
                 docker push %FRONTEND_IMAGE%
-                '''
+                docker push %FRONTEND_LATEST%
+                """
             }
         }
         
         stage('Update Kubernetes Manifests') {
             steps {
-                echo 'Updating Kubernetes manifest files with new image tags...'
-                bat '''
-                powershell -Command "(Get-Content k8s/backend-deployment.yaml) -replace 'IMAGE_BACKEND', '%BACKEND_IMAGE%' | Set-Content k8s/backend-deployment.yaml"
-                powershell -Command "(Get-Content k8s/frontend-deployment.yaml) -replace 'IMAGE_FRONTEND', '%FRONTEND_IMAGE%' | Set-Content k8s/frontend-deployment.yaml"
-                echo Manifest files updated successfully
-                '''
+                echo 'Updating Kubernetes manifest files...'
+                bat """
+                powershell -Command "(Get-Content k8s\\backend-deployment.yaml) -replace 'IMAGE_BACKEND', '%BACKEND_LATEST%' | Set-Content k8s\\backend-deployment-updated.yaml"
+                powershell -Command "(Get-Content k8s\\frontend-deployment.yaml) -replace 'IMAGE_FRONTEND', '%FRONTEND_LATEST%' | Set-Content k8s\\frontend-deployment-updated.yaml"
+                """
             }
         }
         
-        stage('Verify Kubernetes Connection') {
+        stage('Copy Manifests to VM') {
             steps {
-                echo 'Verifying Kubernetes cluster connection...'
-                bat '''
-                set KUBECONFIG=%KUBECONFIG%
-                kubectl cluster-info
-                kubectl get nodes
-                echo Kubernetes cluster is reachable
-                '''
+                echo 'Copying Kubernetes manifests to VM...'
+                script {
+                    withCredentials([sshUserPrivateKey(
+                        credentialsId: 'vm-ssh-credentials',
+                        keyFileVariable: 'SSH_KEY',
+                        usernameVariable: 'SSH_USER'
+                    )]) {
+                        bat """
+                        ssh -i "%SSH_KEY%" -o StrictHostKeyChecking=no %SSH_USER%@%VM_HOST% "mkdir -p %K8S_MANIFESTS_PATH%"
+                        
+                        scp -i "%SSH_KEY%" -o StrictHostKeyChecking=no k8s\\backend-deployment-updated.yaml %SSH_USER%@%VM_HOST%:%K8S_MANIFESTS_PATH%/backend-deployment.yaml
+                        scp -i "%SSH_KEY%" -o StrictHostKeyChecking=no k8s\\backend-service.yaml %SSH_USER%@%VM_HOST%:%K8S_MANIFESTS_PATH%/
+                        scp -i "%SSH_KEY%" -o StrictHostKeyChecking=no k8s\\frontend-deployment-updated.yaml %SSH_USER%@%VM_HOST%:%K8S_MANIFESTS_PATH%/frontend-deployment.yaml
+                        scp -i "%SSH_KEY%" -o StrictHostKeyChecking=no k8s\\frontend-service.yaml %SSH_USER%@%VM_HOST%:%K8S_MANIFESTS_PATH%/
+                        """
+                    }
+                }
             }
         }
         
-        stage('Deploy to Kubernetes') {
+        stage('Deploy to VM Kubernetes') {
             steps {
-                echo 'Deploying applications to Kubernetes cluster...'
-                bat '''
-                set KUBECONFIG=%KUBECONFIG%
-                
-                echo Applying backend deployment...
-                kubectl apply -f k8s/backend-deployment.yaml
-                
-                echo Applying backend service...
-                kubectl apply -f k8s/backend-service.yaml
-                
-                echo Applying frontend deployment...
-                kubectl apply -f k8s/frontend-deployment.yaml
-                
-                echo Applying frontend service...
-                kubectl apply -f k8s/frontend-service.yaml
-                
-                echo All manifests applied successfully
-                '''
+                echo 'Deploying to Kubernetes on VM...'
+                script {
+                    withCredentials([sshUserPrivateKey(
+                        credentialsId: 'vm-ssh-credentials',
+                        keyFileVariable: 'SSH_KEY',
+                        usernameVariable: 'SSH_USER'
+                    )]) {
+                        bat """
+                        ssh -i "%SSH_KEY%" -o StrictHostKeyChecking=no %SSH_USER%@%VM_HOST% "kubectl apply -f %K8S_MANIFESTS_PATH%/backend-deployment.yaml && kubectl apply -f %K8S_MANIFESTS_PATH%/backend-service.yaml && kubectl apply -f %K8S_MANIFESTS_PATH%/frontend-deployment.yaml && kubectl apply -f %K8S_MANIFESTS_PATH%/frontend-service.yaml"
+                        """
+                    }
+                }
             }
         }
         
         stage('Verify Deployment') {
             steps {
-                echo 'Verifying deployment status...'
-                bat '''
-                set KUBECONFIG=%KUBECONFIG%
-                
-                echo Waiting for backend deployment to roll out...
-                kubectl rollout status deployment/expense-backend --timeout=5m
-                
-                echo Waiting for frontend deployment to roll out...
-                kubectl rollout status deployment/expense-frontend --timeout=5m
-                
-                echo.
-                echo ======================================
-                echo Deployment Status:
-                echo ======================================
-                kubectl get deployments
-                
-                echo.
-                echo ======================================
-                echo Pods Status:
-                echo ======================================
-                kubectl get pods
-                
-                echo.
-                echo ======================================
-                echo Services:
-                echo ======================================
-                kubectl get services
-                
-                echo.
-                echo Deployment verification completed successfully!
-                '''
+                echo 'Verifying deployment...'
+                script {
+                    withCredentials([sshUserPrivateKey(
+                        credentialsId: 'vm-ssh-credentials',
+                        keyFileVariable: 'SSH_KEY',
+                        usernameVariable: 'SSH_USER'
+                    )]) {
+                        bat """
+                        ssh -i "%SSH_KEY%" -o StrictHostKeyChecking=no %SSH_USER%@%VM_HOST% "kubectl rollout status deployment/expense-backend --timeout=5m && kubectl rollout status deployment/expense-frontend --timeout=5m && echo '' && echo '======== DEPLOYMENTS ========' && kubectl get deployments && echo '' && echo '======== PODS ========' && kubectl get pods && echo '' && echo '======== SERVICES ========' && kubectl get services"
+                        """
+                    }
+                }
             }
         }
     }
     
     post {
         success {
-            echo '======================================'
+            echo '=========================================='
             echo 'Pipeline executed successfully!'
-            echo 'All images built, pushed, and deployed'
-            echo '======================================'
+            echo 'Application deployed to VM Kubernetes'
+            echo 'Frontend: http://%VM_HOST%:30000'
+            echo 'Backend: http://%VM_HOST%:30001'
+            echo '=========================================='
         }
         failure {
-            echo '======================================'
+            echo '=========================================='
             echo 'Pipeline failed!'
-            echo 'Check the logs above for details'
-            echo '======================================'
+            echo 'Check logs above for details'
+            echo '=========================================='
         }
         always {
-            echo 'Cleaning up Docker images from Jenkins server...'
-            bat '''
-                docker image prune -f
-            '''
+            bat 'docker image prune -f'
         }
     }
 }
