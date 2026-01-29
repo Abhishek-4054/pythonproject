@@ -1,18 +1,18 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: expense-frontend
+  name: frontend
   labels:
-    app: expense-frontend
+    app: frontend
 spec:
   replicas: 2
   selector:
     matchLabels:
-      app: expense-frontend
+      app: frontend
   template:
     metadata:
       labels:
-        app: expense-frontend
+        app: frontend
     spec:
       containers:
       - name: frontend
@@ -21,6 +21,6 @@ spec:
         - containerPort: 3000
         env:
         - name: REACT_APP_API_URL
-          value: "http://192.168.130.131:30001"
+          value: "http://192.168.49.1:30001"
 
         
