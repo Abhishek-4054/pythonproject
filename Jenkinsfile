@@ -7,51 +7,56 @@ pipeline {
         FRONTEND_IMAGE    = "${DOCKERHUB_USER}/expense-frontend:${BUILD_NUMBER}"
         BACKEND_LATEST    = "${DOCKERHUB_USER}/expense-backend:latest"
         FRONTEND_LATEST   = "${DOCKERHUB_USER}/expense-frontend:latest"
-
-        // VM Configuration
-        VM_HOST = "192.168.130.131"
-        VM_USER = "abhishek4054"
-        K8S_MANIFESTS_PATH = "/home/${VM_USER}/k8s-manifests"
+        
+        VM_HOST           = "192.168.130.131"
+        VM_USER           = "abhishek4054"
+        K8S_MANIFESTS_PATH = "/home/abhishek4054/k8s-manifests"
     }
 
     stages {
         stage('Checkout') {
             steps {
-                echo 'Checking out source code...'
                 checkout scm
             }
         }
 
-        stage('Build and Tag Images') {
+        stage('Build Backend') {
             steps {
-                bat """
-                docker build -t %BACKEND_IMAGE% backend
-                docker tag %BACKEND_IMAGE% %BACKEND_LATEST%
-                docker build -t %FRONTEND_IMAGE% frontend
-                docker tag %FRONTEND_IMAGE% %FRONTEND_LATEST%
-                """
+                bat "docker build -t %BACKEND_IMAGE% backend"
+                bat "docker tag %BACKEND_IMAGE% %BACKEND_LATEST%"
             }
         }
 
-        stage('Docker Login & Push') {
+        stage('Build Frontend') {
             steps {
-                withCredentials([usernamePassword(
-                    credentialsId: 'dockerhub-credentials',
-                    usernameVariable: 'DOCKER_USER',
-                    passwordVariable: 'DOCKER_PASS'
-                )]) {
-                    bat """
-                    echo %DOCKER_PASS% | docker login -u %DOCKER_USER% --password-stdin
-                    docker push %BACKEND_IMAGE%
-                    docker push %BACKEND_LATEST%
-                    docker push %FRONTEND_IMAGE%
-                    docker push %FRONTEND_LATEST%
-                    """
+                bat "docker build -t %FRONTEND_IMAGE% frontend"
+                bat "docker tag %FRONTEND_IMAGE% %FRONTEND_LATEST%"
+            }
+        }
+
+        stage('Docker Login') {
+            steps {
+                withCredentials([usernamePassword(credentialsId: 'dockerhub-credentials', usernameVariable: 'D_USER', passwordVariable: 'D_PASS')]) {
+                    bat "echo %D_PASS% | docker login -u %D_USER% --password-stdin"
                 }
             }
         }
 
-        stage('Update Kubernetes Manifests') {
+        stage('Push Backend') {
+            steps {
+                bat "docker push %BACKEND_IMAGE%"
+                bat "docker push %BACKEND_LATEST%"
+            }
+        }
+
+        stage('Push Frontend') {
+            steps {
+                bat "docker push %FRONTEND_IMAGE%"
+                bat "docker push %FRONTEND_LATEST%"
+            }
+        }
+
+        stage('Update Manifests') {
             steps {
                 bat """
                 powershell -Command "(Get-Content k8s\\backend-deployment.yaml) -replace 'IMAGE_BACKEND', '%BACKEND_LATEST%' | Set-Content k8s\\backend-deployment-updated.yaml"
@@ -60,21 +65,24 @@ pipeline {
             }
         }
 
-        stage('Copy Manifests to VM') {
+        stage('Prepare VM Directories') {
             steps {
-                withCredentials([sshUserPrivateKey(
-                    credentialsId: 'vm-ssh-credentials',
-                    keyFileVariable: 'SSH_KEY',
-                    usernameVariable: 'SSH_USER'
-                )]) {
+                withCredentials([sshUserPrivateKey(credentialsId: 'vm-ssh-credentials', keyFileVariable: 'SSH_KEY', usernameVariable: 'SSH_USER')]) {
                     bat """
                     @echo off
-                    :: Step 1: Fix Windows Permissions for SSH Key
-                    powershell -Command "icacls '%SSH_KEY%' /inheritance:r; icacls '%SSH_KEY%' /grant '%USERNAME%:(F)'; icacls '%SSH_KEY%' /remove 'Users'; icacls '%SSH_KEY%' /remove 'Authenticated Users'"
-
-                    :: Step 2: Run SSH/SCP commands
+                    powershell -Command "\$p='%SSH_KEY%'; \$acl = Get-Acl \$p; \$acl.SetAccessRuleProtection(\$true, \$false); \$rule = New-Object System.Security.AccessControl.FileSystemAccessRule([System.Security.Principal.WindowsIdentity]::GetCurrent().Name, 'FullControl', 'Allow'); \$acl.AddAccessRule(\$rule); Set-Acl \$p \$acl"
                     ssh -i "%SSH_KEY%" -o StrictHostKeyChecking=no %SSH_USER%@%VM_HOST% "mkdir -p ${K8S_MANIFESTS_PATH}"
+                    """
+                }
+            }
+        }
 
+        stage('Transfer Manifests') {
+            steps {
+                withCredentials([sshUserPrivateKey(credentialsId: 'vm-ssh-credentials', keyFileVariable: 'SSH_KEY', usernameVariable: 'SSH_USER')]) {
+                    bat """
+                    @echo off
+                    powershell -Command "\$p='%SSH_KEY%'; \$acl = Get-Acl \$p; \$acl.SetAccessRuleProtection(\$true, \$false); \$rule = New-Object System.Security.AccessControl.FileSystemAccessRule([System.Security.Principal.WindowsIdentity]::GetCurrent().Name, 'FullControl', 'Allow'); \$acl.AddAccessRule(\$rule); Set-Acl \$p \$acl"
                     scp -i "%SSH_KEY%" -o StrictHostKeyChecking=no k8s\\backend-deployment-updated.yaml %SSH_USER%@%VM_HOST%:${K8S_MANIFESTS_PATH}/backend-deployment.yaml
                     scp -i "%SSH_KEY%" -o StrictHostKeyChecking=no k8s\\backend-service.yaml %SSH_USER%@%VM_HOST%:${K8S_MANIFESTS_PATH}/
                     scp -i "%SSH_KEY%" -o StrictHostKeyChecking=no k8s\\frontend-deployment-updated.yaml %SSH_USER%@%VM_HOST%:${K8S_MANIFESTS_PATH}/frontend-deployment.yaml
@@ -84,24 +92,13 @@ pipeline {
             }
         }
 
-        stage('Deploy to VM Kubernetes') {
+        stage('Deploy K8s Resources') {
             steps {
-                withCredentials([sshUserPrivateKey(
-                    credentialsId: 'vm-ssh-credentials',
-                    keyFileVariable: 'SSH_KEY',
-                    usernameVariable: 'SSH_USER'
-                )]) {
+                withCredentials([sshUserPrivateKey(credentialsId: 'vm-ssh-credentials', keyFileVariable: 'SSH_KEY', usernameVariable: 'SSH_USER')]) {
                     bat """
                     @echo off
-                    :: Fix permissions again (for this specific session)
-                    powershell -Command "icacls '%SSH_KEY%' /inheritance:r; icacls '%SSH_KEY%' /grant '%USERNAME%:(F)'; icacls '%SSH_KEY%' /remove 'Users'; icacls '%SSH_KEY%' /remove 'Authenticated Users'"
-
-                    ssh -i "%SSH_KEY%" -o StrictHostKeyChecking=no %SSH_USER%@%VM_HOST% " \
-                        kubectl apply -f ${K8S_MANIFESTS_PATH}/backend-deployment.yaml && \
-                        kubectl apply -f ${K8S_MANIFESTS_PATH}/backend-service.yaml && \
-                        kubectl apply -f ${K8S_MANIFESTS_PATH}/frontend-deployment.yaml && \
-                        kubectl apply -f ${K8S_MANIFESTS_PATH}/frontend-service.yaml \
-                    "
+                    powershell -Command "\$p='%SSH_KEY%'; \$acl = Get-Acl \$p; \$acl.SetAccessRuleProtection(\$true, \$false); \$rule = New-Object System.Security.AccessControl.FileSystemAccessRule([System.Security.Principal.WindowsIdentity]::GetCurrent().Name, 'FullControl', 'Allow'); \$acl.AddAccessRule(\$rule); Set-Acl \$p \$acl"
+                    ssh -i "%SSH_KEY%" -o StrictHostKeyChecking=no %SSH_USER%@%VM_HOST% "kubectl apply -f ${K8S_MANIFESTS_PATH}/"
                     """
                 }
             }
@@ -109,22 +106,11 @@ pipeline {
 
         stage('Verify Deployment') {
             steps {
-                withCredentials([sshUserPrivateKey(
-                    credentialsId: 'vm-ssh-credentials',
-                    keyFileVariable: 'SSH_KEY',
-                    usernameVariable: 'SSH_USER'
-                )]) {
+                withCredentials([sshUserPrivateKey(credentialsId: 'vm-ssh-credentials', keyFileVariable: 'SSH_KEY', usernameVariable: 'SSH_USER')]) {
                     bat """
                     @echo off
-                    :: Fix permissions again
-                    powershell -Command "icacls '%SSH_KEY%' /inheritance:r; icacls '%SSH_KEY%' /grant '%USERNAME%:(F)'; icacls '%SSH_KEY%' /remove 'Users'; icacls '%SSH_KEY%' /remove 'Authenticated Users'"
-
-                    ssh -i "%SSH_KEY%" -o StrictHostKeyChecking=no %SSH_USER%@%VM_HOST% " \
-                        kubectl rollout status deployment/expense-backend --timeout=5m && \
-                        kubectl rollout status deployment/expense-frontend --timeout=5m && \
-                        kubectl get pods && \
-                        kubectl get services \
-                    "
+                    powershell -Command "\$p='%SSH_KEY%'; \$acl = Get-Acl \$p; \$acl.SetAccessRuleProtection(\$true, \$false); \$rule = New-Object System.Security.AccessControl.FileSystemAccessRule([System.Security.Principal.WindowsIdentity]::GetCurrent().Name, 'FullControl', 'Allow'); \$acl.AddAccessRule(\$rule); Set-Acl \$p \$acl"
+                    ssh -i "%SSH_KEY%" -o StrictHostKeyChecking=no %SSH_USER%@%VM_HOST% "kubectl rollout status deployment/expense-backend --timeout=2m && kubectl get pods"
                     """
                 }
             }
@@ -132,18 +118,11 @@ pipeline {
     }
 
     post {
-        success {
-            echo "=========================================="
-            echo "Pipeline executed successfully!"
-            echo "Frontend: http://${VM_HOST}:30000"
-            echo "Backend:  http://${VM_HOST}:30001"
-            echo "=========================================="
-        }
-        failure {
-            echo "Pipeline failed! Check logs for permission errors or network issues."
-        }
         always {
             bat "docker image prune -f"
+        }
+        success {
+            echo "Deployment Successful on http://${VM_HOST}"
         }
     }
 }
