@@ -2,15 +2,15 @@ pipeline {
     agent any
 
     environment {
-        DOCKERHUB_USER   = "abhishekc4054"
-        BACKEND_IMAGE    = "${DOCKERHUB_USER}/expense-backend:${BUILD_NUMBER}"
-        FRONTEND_IMAGE   = "${DOCKERHUB_USER}/expense-frontend:${BUILD_NUMBER}"
-        BACKEND_LATEST   = "${DOCKERHUB_USER}/expense-backend:latest"
-        FRONTEND_LATEST  = "${DOCKERHUB_USER}/expense-frontend:latest"
+        DOCKERHUB_USER    = "abhishekc4054"
+        BACKEND_IMAGE     = "${DOCKERHUB_USER}/expense-backend:${BUILD_NUMBER}"
+        FRONTEND_IMAGE    = "${DOCKERHUB_USER}/expense-frontend:${BUILD_NUMBER}"
+        BACKEND_LATEST    = "${DOCKERHUB_USER}/expense-backend:latest"
+        FRONTEND_LATEST   = "${DOCKERHUB_USER}/expense-frontend:latest"
 
         // VM Configuration
-        VM_HOST = "192.168.130.131"   // e.g. 192.168.1.100
-        VM_USER = "abhishek4054"      // e.g. ubuntu
+        VM_HOST = "192.168.130.131"
+        VM_USER = "abhishek4054"
         K8S_MANIFESTS_PATH = "/home/${VM_USER}/k8s-manifests"
     }
 
@@ -22,25 +22,18 @@ pipeline {
             }
         }
 
-        stage('Build Backend Image') {
+        stage('Build and Tag Images') {
             steps {
                 bat """
                 docker build -t %BACKEND_IMAGE% backend
                 docker tag %BACKEND_IMAGE% %BACKEND_LATEST%
-                """
-            }
-        }
-
-        stage('Build Frontend Image') {
-            steps {
-                bat """
                 docker build -t %FRONTEND_IMAGE% frontend
                 docker tag %FRONTEND_IMAGE% %FRONTEND_LATEST%
                 """
             }
         }
 
-        stage('Docker Login') {
+        stage('Docker Login & Push') {
             steps {
                 withCredentials([usernamePassword(
                     credentialsId: 'dockerhub-credentials',
@@ -49,19 +42,12 @@ pipeline {
                 )]) {
                     bat """
                     echo %DOCKER_PASS% | docker login -u %DOCKER_USER% --password-stdin
+                    docker push %BACKEND_IMAGE%
+                    docker push %BACKEND_LATEST%
+                    docker push %FRONTEND_IMAGE%
+                    docker push %FRONTEND_LATEST%
                     """
                 }
-            }
-        }
-
-        stage('Push Images') {
-            steps {
-                bat """
-                docker push %BACKEND_IMAGE%
-                docker push %BACKEND_LATEST%
-                docker push %FRONTEND_IMAGE%
-                docker push %FRONTEND_LATEST%
-                """
             }
         }
 
@@ -82,6 +68,11 @@ pipeline {
                     usernameVariable: 'SSH_USER'
                 )]) {
                     bat """
+                    @echo off
+                    :: Step 1: Fix Windows Permissions for SSH Key
+                    powershell -Command "icacls '%SSH_KEY%' /inheritance:r; icacls '%SSH_KEY%' /grant '%USERNAME%:(F)'; icacls '%SSH_KEY%' /remove 'Users'; icacls '%SSH_KEY%' /remove 'Authenticated Users'"
+
+                    :: Step 2: Run SSH/SCP commands
                     ssh -i "%SSH_KEY%" -o StrictHostKeyChecking=no %SSH_USER%@%VM_HOST% "mkdir -p ${K8S_MANIFESTS_PATH}"
 
                     scp -i "%SSH_KEY%" -o StrictHostKeyChecking=no k8s\\backend-deployment-updated.yaml %SSH_USER%@%VM_HOST%:${K8S_MANIFESTS_PATH}/backend-deployment.yaml
@@ -101,11 +92,15 @@ pipeline {
                     usernameVariable: 'SSH_USER'
                 )]) {
                     bat """
-                    ssh -i "%SSH_KEY%" -o StrictHostKeyChecking=no %SSH_USER%@%VM_HOST% "
-                        kubectl apply -f ${K8S_MANIFESTS_PATH}/backend-deployment.yaml &&
-                        kubectl apply -f ${K8S_MANIFESTS_PATH}/backend-service.yaml &&
-                        kubectl apply -f ${K8S_MANIFESTS_PATH}/frontend-deployment.yaml &&
-                        kubectl apply -f ${K8S_MANIFESTS_PATH}/frontend-service.yaml
+                    @echo off
+                    :: Fix permissions again (for this specific session)
+                    powershell -Command "icacls '%SSH_KEY%' /inheritance:r; icacls '%SSH_KEY%' /grant '%USERNAME%:(F)'; icacls '%SSH_KEY%' /remove 'Users'; icacls '%SSH_KEY%' /remove 'Authenticated Users'"
+
+                    ssh -i "%SSH_KEY%" -o StrictHostKeyChecking=no %SSH_USER%@%VM_HOST% " \
+                        kubectl apply -f ${K8S_MANIFESTS_PATH}/backend-deployment.yaml && \
+                        kubectl apply -f ${K8S_MANIFESTS_PATH}/backend-service.yaml && \
+                        kubectl apply -f ${K8S_MANIFESTS_PATH}/frontend-deployment.yaml && \
+                        kubectl apply -f ${K8S_MANIFESTS_PATH}/frontend-service.yaml \
                     "
                     """
                 }
@@ -120,11 +115,15 @@ pipeline {
                     usernameVariable: 'SSH_USER'
                 )]) {
                     bat """
-                    ssh -i "%SSH_KEY%" -o StrictHostKeyChecking=no %SSH_USER%@%VM_HOST% "
-                        kubectl rollout status deployment/expense-backend --timeout=5m &&
-                        kubectl rollout status deployment/expense-frontend --timeout=5m &&
-                        kubectl get pods &&
-                        kubectl get services
+                    @echo off
+                    :: Fix permissions again
+                    powershell -Command "icacls '%SSH_KEY%' /inheritance:r; icacls '%SSH_KEY%' /grant '%USERNAME%:(F)'; icacls '%SSH_KEY%' /remove 'Users'; icacls '%SSH_KEY%' /remove 'Authenticated Users'"
+
+                    ssh -i "%SSH_KEY%" -o StrictHostKeyChecking=no %SSH_USER%@%VM_HOST% " \
+                        kubectl rollout status deployment/expense-backend --timeout=5m && \
+                        kubectl rollout status deployment/expense-frontend --timeout=5m && \
+                        kubectl get pods && \
+                        kubectl get services \
                     "
                     """
                 }
@@ -141,9 +140,7 @@ pipeline {
             echo "=========================================="
         }
         failure {
-            echo "=========================================="
-            echo "Pipeline failed! Check logs above."
-            echo "=========================================="
+            echo "Pipeline failed! Check logs for permission errors or network issues."
         }
         always {
             bat "docker image prune -f"
